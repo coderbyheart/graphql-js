@@ -630,4 +630,189 @@ describe('Subscribe', () => {
       );
     }).to.throw('test error');
   });
+
+  it('should handle error during execuction of source event', async () => {
+    const erroringEmailSchema = new GraphQLSchema({
+      query: QueryType,
+      subscription: new GraphQLObjectType({
+        name: 'Subscription',
+        fields: {
+          importantEmail: {
+            type: GraphQLString,
+            resolve(event) {
+              if (event === 'Goodbye') {
+                throw new Error('Never leave.');
+              }
+              return event;
+            },
+            subscribe: async function* importantEmail() {
+              yield 'Hello';
+              yield 'Goodbye';
+            },
+          },
+        },
+      })
+    });
+
+    const subscription = subscribe(
+      erroringEmailSchema,
+      parse(`
+        subscription {
+          importantEmail
+        }
+      `)
+    );
+
+    const payload1 = await subscription.next();
+    expect(payload1).to.jsonEqual({
+      done: false,
+      value: {
+        data: {
+          importantEmail: 'Hello'
+        }
+      }
+    });
+
+    const payload2 = await subscription.next();
+    expect(payload2).to.jsonEqual({
+      done: false,
+      value: {
+        errors: [
+          {
+            message: 'Never leave.',
+            locations: [ { line: 3, column: 11 } ],
+            path: [ 'importantEmail' ],
+          }
+        ],
+        data: {
+          importantEmail: null,
+        }
+      }
+    });
+  });
+
+  function emailSchemaWithSubscribeFn(subscribeFn) {
+    return new GraphQLSchema({
+      query: QueryType,
+      subscription: new GraphQLObjectType({
+        name: 'Subscription',
+        fields: {
+          importantEmail: {
+            type: GraphQLString,
+            resolve(event) {
+              return event;
+            },
+            subscribe: subscribeFn,
+          },
+        },
+      })
+    });
+  }
+
+  it('should pass through error thrown in source event stream', async () => {
+    const erroringEmailSchema = emailSchemaWithSubscribeFn(
+      async function* importantEmail() {
+        yield 'Hello';
+        throw new Error('test error');
+      }
+    );
+
+    const subscription = subscribe(
+      erroringEmailSchema,
+      parse(`
+        subscription {
+          importantEmail
+        }
+      `)
+    );
+
+    const payload1 = await subscription.next();
+    expect(payload1).to.jsonEqual({
+      done: false,
+      value: {
+        data: {
+          importantEmail: 'Hello'
+        }
+      }
+    });
+
+    let expectedError;
+    try {
+      await subscription.next();
+    } catch (error) {
+      expectedError = error;
+    }
+
+    expect(expectedError).to.deep.equal(new Error('test error'));
+
+    const payload2 = await subscription.next();
+    expect(payload2).to.jsonEqual({
+      done: true,
+      value: undefined
+    });
+  });
+
+  it('represents thrown error as rejected event stream', async () => {
+    const erroringEmailSchema = emailSchemaWithSubscribeFn(
+      function importantEmail() {
+        throw new Error('test error');
+      }
+    );
+
+    const subscription = subscribe(
+      erroringEmailSchema,
+      parse(`
+        subscription {
+          importantEmail
+        }
+      `)
+    );
+
+    let expectedError;
+    try {
+      await subscription.next();
+    } catch (error) {
+      expectedError = error;
+    }
+
+    expect(expectedError).to.deep.equal(new Error('test error'));
+
+    const payload1 = await subscription.next();
+    expect(payload1).to.jsonEqual({
+      done: true,
+      value: undefined
+    });
+  });
+
+  it('represents returned error as rejected event stream', async () => {
+    const erroringEmailSchema = emailSchemaWithSubscribeFn(
+      function importantEmail() {
+        return new Error('test error');
+      }
+    );
+
+    const subscription = subscribe(
+      erroringEmailSchema,
+      parse(`
+        subscription {
+          importantEmail
+        }
+      `)
+    );
+
+    let expectedError;
+    try {
+      await subscription.next();
+    } catch (error) {
+      expectedError = error;
+    }
+
+    expect(expectedError).to.deep.equal(new Error('test error'));
+
+    const payload1 = await subscription.next();
+    expect(payload1).to.jsonEqual({
+      done: true,
+      value: undefined
+    });
+  });
 });
